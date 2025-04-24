@@ -1,0 +1,239 @@
+---
+title: "Econometrics and Machine Learning project"
+format: html
+editor: visual
+---
+
+# Econometrics and Machine Learning project
+
+# Secondary school student performance
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+```{r}
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(glmnet)
+library(corrplot)
+library(randomForest)
+library(Metrics)
+```
+
+```{r}
+
+grades <- read_delim("C:/Users/sdiallo/Downloads/student_num.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+
+grades<-grades %>% select(-c(...1,G1,G2))
+
+#View(student_num)
+```
+
+We split our dataset into a training and test sample in order to
+
+```{r}
+#set.seed(27112019)
+set.seed(123) 
+student_smpl <- student_num[sample(nrow(student_num), size = 382 ),] # 
+train <- student_smpl[1:305,] %>% select(-c(G1,G2)) # Construct a training data set.
+test <- student_smpl[306:382,] %>% select(-c(G1,G2))
+```
+
+
+## Correlation between variables
+```{r}
+dim(grades)
+head(grades)
+cor <- round(cor(train[,c(1:25)]),2) # Variable 26 is the depedendent variable
+corrplot(cor)
+```
+
+# Linear regression
+## Long regression
+```{r}
+#OLS
+ols <- lm(G3 ~ ., data = train)
+summary(ols)
+
+# Calculate the MSE
+test$predols <- predict(ols, newdata = test)
+
+predMSEols <- mean((test$G3 - test$predols)^2)
+print(predMSEols)
+```
+
+
+## Short regression
+```{r}
+ols_small <- lm(G3 ~ failures , data = train)
+
+# Calculate the MSE
+test$predols_small <- predict(ols_small, newdata = test)
+
+predMSEols_small <- mean((test$G3 - test$predols_small)^2)
+print(predMSEols_small)
+```
+
+# Lasso regression
+```{r}
+########################  Lasso Path  ########################
+
+# We make a plot that shows how the Lasso coefficients change with lambda
+# glmnet is the standard R package for Lasso, Ridge, and Elastic Net
+# alpha is a parmeter that allows to specify a Lasso, Ridge, or Elastic Net model
+# alpha = 1 for Lasso; alpha = 0 for Ridge, 0 < alpha < 1 for Elastic Net
+# The control variables are train[,c(1:25)]
+# The outcome variable is train$G3 (math grades)
+train
+# Estimate a Lasso model
+lasso <- glmnet(as.matrix(train[,c(1:26)]), train$G3, alpha = 1) # We save the model under the name "lasso"
+plot(lasso, xvar = "lambda", label = TRUE)
+
+###############################################################
+```
+
+```{r}
+set.seed(123)
+#set.seed(27112019)
+
+# Cross-validate the Lasso
+lasso.cv <- cv.glmnet(as.matrix(train[,c(1:26)]), train$G3, type.measure = "mse", nfolds = 5, alpha = 1)
+
+# Plot the MSE for the different lambda values
+plot(lasso.cv)
+
+```
+
+```{r}
+# Print the optimal lambda value
+print(paste0("Optimal lambda that minimizes cross-validated MSE: ", lasso.cv$lambda.min))
+print(paste0("Optimal lambda using one-standard-error-rule: ", lasso.cv$lambda.1se))
+```
+
+```{r}
+# Print Lasso coefficients
+print(coef(lasso.cv, s = "lambda.min"))
+
+# Save for later comparison
+coef_lasso1 <- coef(lasso.cv, s = "lambda.min") 
+```
+
+```{r}
+########################  Test Sample MSE  ########################
+
+# Estimate the fitted values of the Lasso model in the test sample
+# We use the model "lasso.cv" and the lambda value which we estimated in the training sample
+# The control variables "newx" are from the test sample
+
+# Fitted values
+test$predlasso <- predict(lasso.cv, newx = as.matrix(test[,c(1:26)]), s = lasso.cv$lambda.min)
+
+# Calculate the MSE
+predMSElasso <- mean((test$G3 - test$predlasso)^2)
+print(paste0("MSE: ", predMSElasso))
+      
+#####################################################################
+
+```
+
+```{r}
+coef_lasso1[,1]
+write.xlsx(coef_lasso1[,1],"C:/Users/sdiallo/Desktop/Souleymane/student/lasso.xlsx")
+
+```
+
+# Random Forest Algorithm
+```{r}
+student.rf <- randomForest(G3 ~ ., data=train, importance=TRUE) # Function uses Breimans' rf.
+print(student.rf) # According to confusion matrix the classification error rate is 4.67%.
+round(importance(student.rf, 2)) # Higher values for variables mean more splits over these variables.
+
+varImpPlot(student.rf)
+```
+
+```{r}
+test$pred_rf <- predict(student.rf, newdata = test)
+
+predMSE_rf <- mean((test$G3 - test$pred_rf)^2)
+print(predMSE_rf)
+```
+# Interpretability
+## Variable Importance
+```{r}
+var_importance <-as.data.frame(importance(student.rf)) %>% rename(IncAccuracy=`%IncMSE`)
+var_importance$Variable <- row.names(var_importance)
+
+```
+
+```{r}
+#library(ggplot2)
+
+ggplot(var_importance, aes(x= reorder(Variable, IncNodePurity), y= IncNodePurity)) +
+  geom_bar(stat = "identity", fill="steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs( title = "Variable importance", x="Variables", y= "Relative Importance")
+
+ggplot(var_importance, aes(x= reorder(Variable, IncAccuracy), y= IncAccuracy)) +
+  geom_bar(stat = "identity", fill="steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs( title = "Variable importance", x="Variables", y= "Relative Importance")
+```
+
+## Partial Dependance Plot (PDP)
+```{r}
+install.packages("pdp")
+library(pdp)
+```
+
+```{r}
+pdp_variable <- partial(student.rf, pred.var = "age", prob= TRUE)
+
+plotPartial(pdp_variable)
+```
+
+
+## Shapley Value
+```{r}
+#install.packages("fastshap")
+library(shapviz)
+library(fastshap)
+newdata <- test[,1:26]
+
+pred_fun <- function(student.rf, newdata) {
+  predict(student.rf, newdata = newdata)
+}
+
+sv_matrix <- explain(student.rf, X = train[,1:26], pred_wrapper = pred_fun, nsim = 100)
+sv_rf <- shapviz(sv_matrix, X = train[,1:26])
+
+sv_importance(sv_rf, show_numbers = TRUE)
+
+plot(sv_rf, kind = "dependance", feature="absences")
+xvars <- c("absences", "failures", "schoolsup", "age")
+
+sv_importance(sv_rf, show_numbers = TRUE)
+sv_importance(sv_rf, kind = "bee")
+sv_dependence(sv_rf, v = xvars)  # multiple plots -> patchwork
+
+```
+
+```{r}
+sv_waterfall(sv_rf, row_id = 2) +
+  ggtitle("Waterfall plot for second prediction")
+  
+sv_force(sv_rf, row_id = 2) +
+  ggtitle("Force plot for second prediction")
+```
+
+
+
+# Causal Inference : Random Forest
+
+```{r}
+
+```
+
+# Heterogenous Treatment effect
